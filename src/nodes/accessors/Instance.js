@@ -214,6 +214,11 @@ export const instance = /*@__PURE__*/ Fn( ( [ matrices, colors = null ], builder
 
 			const { previousInstanceMatrix } = _previousInstanceMatrices.get( object );
 
+			// copy only if the matrices have changed since the last copy. dynamic buffers are uploaded
+			// every frame without a version change, so their previous matrices are always copied
+
+			if ( matrices.usage !== DynamicDrawUsage && previousInstanceMatrix.version === matrices.version ) return;
+
 			previousInstanceMatrix.array.set( matrices.array );
 			previousInstanceMatrix.version = matrices.version;
 
