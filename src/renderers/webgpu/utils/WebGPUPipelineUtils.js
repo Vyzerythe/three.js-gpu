@@ -905,7 +905,10 @@ class WebGPUPipelineUtils {
 
 		if ( geometry.index !== null && object.isLine === true && object.isLineSegments !== true ) {
 
-			descriptor.stripIndexFormat = ( geometry.index.array instanceof Uint16Array ) ? GPUIndexFormat.Uint16 : GPUIndexFormat.Uint32;
+			const index = geometry.index;
+			const isUint16 = index.hasCPUData === false ? index.arrayType === Uint16Array : index.array instanceof Uint16Array;
+
+			descriptor.stripIndexFormat = isUint16 ? GPUIndexFormat.Uint16 : GPUIndexFormat.Uint32;
 
 		}
 
