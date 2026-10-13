@@ -635,6 +635,15 @@ class Renderer {
 		this._cacheShadowNodes = new WeakMap();
 
 		/**
+		 * Stores per override material the versions of the source materials
+		 * it was last rendered with.
+		 *
+		 * @private
+		 * @type {WeakMap<Material, WeakMap<Material, number>>}
+		 */
+		this._overrideMaterialSources = new WeakMap();
+
+		/**
 		 * Whether the renderer has been initialized or not.
 		 *
 		 * @private
@@ -3850,7 +3859,27 @@ class Renderer {
 
 			}
 
-			overrideMaterial.alphaTest = material.alphaTest;
+			// the override material is invalidated when a source material changes. alphaTest is not
+			// assigned via its setter since that would change the version whenever consecutive
+			// source materials toggle alpha testing
+
+			let sourceVersions = this._overrideMaterialSources.get( overrideMaterial );
+
+			if ( sourceVersions === undefined ) {
+
+				sourceVersions = new WeakMap();
+				this._overrideMaterialSources.set( overrideMaterial, sourceVersions );
+
+			}
+
+			if ( sourceVersions.get( material ) !== material.version ) {
+
+				sourceVersions.set( material, material.version );
+				overrideMaterial.needsUpdate = true;
+
+			}
+
+			overrideMaterial._alphaTest = material.alphaTest;
 			overrideMaterial.alphaMap = material.alphaMap;
 			overrideMaterial.displacementMap = material.displacementMap;
 			overrideMaterial.displacementScale = material.displacementScale;
