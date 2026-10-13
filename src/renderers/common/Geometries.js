@@ -89,6 +89,31 @@ function getWireframeIndex( geometry ) {
 }
 
 /**
+ * Returns the index and the buffer attributes of the given geometry.
+ *
+ * @private
+ * @function
+ * @param {BufferGeometry} geometry - The geometry.
+ * @param {Backend} backend - The renderer's backend.
+ * @return {Set<BufferAttribute|InterleavedBuffer>} The index and buffer attributes.
+ */
+function getGeometryAttributes( geometry, backend ) {
+
+	const attributes = new Set();
+
+	if ( geometry.index !== null ) attributes.add( geometry.index );
+
+	for ( const attribute of Object.values( geometry.attributes ) ) {
+
+		attributes.add( backend.getBufferAttribute( attribute ) );
+
+	}
+
+	return attributes;
+
+}
+
+/**
  * This renderer module manages geometries.
  *
  * @private
@@ -161,6 +186,15 @@ class Geometries extends DataMap {
 		 */
 		this._registry = new FinalizationRegistry( ( ref ) => this._tracked.delete( ref ) );
 
+		/**
+		 * Counts the initialized geometries using an index or buffer attribute so
+		 * disposing a geometry does not delete attributes shared with other geometries.
+		 *
+		 * @private
+		 * @type {WeakMap<BufferAttribute|InterleavedBuffer,number>}
+		 */
+		this._attributeUsage = new WeakMap();
+
 	}
 
 	/**
@@ -203,25 +237,46 @@ class Geometries extends DataMap {
 
 		this.info.memory.geometries ++;
 
+		const attributes = getGeometryAttributes( geometry, this.backend );
+
+		for ( const attribute of attributes ) {
+
+			this._attributeUsage.set( attribute, ( this._attributeUsage.get( attribute ) || 0 ) + 1 );
+
+		}
+
 		geometryData.onDispose = () => {
 
 			this.info.memory.geometries --;
 
-			// index
+			// index and geometry attributes which are not used by other geometries
 
-			const index = geometry.index;
+			for ( const attribute of attributes ) {
 
-			if ( index !== null ) {
+				const usage = this._attributeUsage.get( attribute ) - 1;
 
-				this.attributes.delete( index );
+				if ( usage > 0 ) {
+
+					this._attributeUsage.set( attribute, usage );
+
+				} else {
+
+					this._attributeUsage.delete( attribute );
+					this.attributes.delete( attribute );
+
+				}
 
 			}
 
-			// geometry attributes
+			// index and geometry attributes assigned after the initialization
 
-			for ( const attribute of Object.values( geometry.attributes ) ) {
+			for ( const attribute of getGeometryAttributes( geometry, this.backend ) ) {
 
-				this.attributes.delete( this.backend.getBufferAttribute( attribute ) );
+				if ( attributes.has( attribute ) === false && this._attributeUsage.has( attribute ) === false ) {
+
+					this.attributes.delete( attribute );
+
+				}
 
 			}
 

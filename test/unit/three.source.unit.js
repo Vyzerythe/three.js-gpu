@@ -233,6 +233,7 @@ import './src/renderers/WebGLCubeRenderTarget.tests.js';
 import './src/renderers/WebGLRenderTarget.tests.js';
 
 //src/renderers/common
+import './src/renderers/common/Geometries.tests.js';
 import './src/renderers/common/StorageBufferAttribute.tests.js';
 
 //src/renderers/shaders
