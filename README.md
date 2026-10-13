@@ -1,3 +1,5 @@
+> **Fork notice:** this is [Vyzerythe/three.js-gpu](https://github.com/Vyzerythe/three.js-gpu), a fork of three.js that tracks upstream closely and carries a few WebGPU patches. See [FORK.md](FORK.md) for branches, patches and usage. Everything below is upstream's README.
+
 # three.js
 
 [![NPM Package][npm]][npm-url]
