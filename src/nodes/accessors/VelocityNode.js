@@ -143,11 +143,13 @@ class VelocityNode extends Node {
 			cameraData.currentProjectionMatrix.copy( this.projectionMatrix || camera.projectionMatrix );
 			cameraData.currentCameraViewMatrix.copy( camera.matrixWorldInverse );
 
-			this.previousProjectionMatrix.value.copy( cameraData.previousProjectionMatrix );
-			this.previousCameraViewMatrix.value.copy( cameraData.previousCameraViewMatrix );
-			this.currentProjectionMatrix.value.copy( cameraData.currentProjectionMatrix );
-
 		}
+
+		// the uniforms are updated even if another node or render already updated the camera data in this frame
+
+		this.previousProjectionMatrix.value.copy( cameraData.previousProjectionMatrix );
+		this.previousCameraViewMatrix.value.copy( cameraData.previousCameraViewMatrix );
+		this.currentProjectionMatrix.value.copy( cameraData.currentProjectionMatrix );
 
 	}
 
