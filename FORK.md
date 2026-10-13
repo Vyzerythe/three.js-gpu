@@ -16,11 +16,17 @@ The previous contents of this repository, the vibegameengine r182 renderer exper
 
 ## Patches
 
-| Patch | What it fixes | Upstream |
-|---|---|---|
-| **StorageBufferAttribute: Allocate CPU data only when accessed.** | A storage attribute created from a count (`instancedArray( count, type )`, `attributeArray( count, type )`, `new StorageBufferAttribute( count, itemSize )`) used to allocate a zero-filled CPU array, copy it into the GPU buffer and keep it for its whole life. Its GPU buffer is now created zero-initialized without an upload, and `array` is only allocated if JavaScript accesses it. Compute-only data no longer cost the same memory twice. Adds `arrayType` and `hasCPUData`. | Not yet proposed |
-| **WebGPUAttributeUtils: Fix padded storage attribute updates.** | A vec3 storage attribute is padded to vec4 when its buffer is created, but every later `needsUpdate` padded the already padded data again, scrambling it. | Not yet proposed |
-| **WebGPUAttributeUtils: Release readback buffers when mapping fails.** | A failed `getArrayBufferAsync()` leaked its temporary read buffer and left a `ReadbackBuffer` locked forever. | Not yet proposed |
+| Patch | What it fixes | `main` | `release/r186` |
+|---|---|---|---|
+| **StorageBufferAttribute: Allocate CPU data only when accessed.** | A storage attribute created from a count (`instancedArray( count, type )`, `attributeArray( count, type )`, `new StorageBufferAttribute( count, itemSize )`) used to allocate a zero-filled CPU array, copy it into the GPU buffer and keep it for its whole life. Its GPU buffer is now created zero-initialized without an upload, and `array` is only allocated if JavaScript accesses it. Compute-only data no longer cost the same memory twice. Adds `arrayType` and `hasCPUData`. | yes | yes |
+| **WebGPUAttributeUtils: Fix padded storage attribute updates.** | A vec3 storage attribute is padded to vec4 when its buffer is created, but every later `needsUpdate` padded the already padded data again, scrambling it. | yes | yes |
+| **WebGPUAttributeUtils: Release readback buffers when mapping fails.** | A failed `getArrayBufferAsync()` leaked its temporary read buffer and left a `ReadbackBuffer` locked forever. | yes | yes |
+| **Renderer: Invalidate override materials by their source materials.** | Shadow and `scene.overrideMaterial` passes copied `alphaTest` through its setter. Casters alternating between alpha-tested and opaque materials therefore bumped the override material's version on every draw, recomputing every render object's cache key each frame: 400 casters went from 15.9 to 7.8 ms median `render()` CPU. A source material's own changes, such as a newly added `map`, also never reached its shadow pipeline. | yes | no |
+| **Instance: Copy previous instance matrices only when they changed.** | With velocity (motion blur, TAA) enabled, every instanced mesh copied its whole instance matrix array every frame, even when nothing moved. Dynamic (`DynamicDrawUsage`) buffers still copy every frame, since they upload without a version change. | yes | no |
+| **Geometries: Only delete attributes no other geometry uses on dispose.** | Disposing one geometry destroyed the buffers of attributes shared with other geometries. Their next draw failed with "setIndexBuffer … not of type GPUBuffer", unset vertex buffers or "used in submit while destroyed". | yes | no |
+| **VelocityNode: Always update camera uniforms.** | Only the first velocity node per camera and frame received the camera matrices. Other velocity nodes, and a camera rendered again after another camera, produced wrong motion vectors. | yes | no |
+
+None of these patches has been proposed upstream yet. The last four are general fixes that `release/r186` does not need for its current users. Backport them to a release branch when a project does.
 
 `release/r186` also carries these upstream fixes, which are on upstream `dev` and will ship in r187:
 
@@ -54,6 +60,8 @@ Each patch was checked against unmodified upstream, using the upstream unit suit
 | Check | Upstream `dev` | `main` | npm 0.186.1 | `release/r186` |
 |---|---|---|---|---|
 | Upstream unit suite | 1955 passed, 2 failed | 1955 passed, 2 failed (the same 2) | 1315 passed | 1315 passed |
+| New tests for the last four patches (5, in `Geometries.tests.js` and `VelocityNode.tests.js`) | 5 fail | 5 pass | not applicable | not applicable |
+| Browser reproductions of the last four patches (override churn, instance copies including a dynamic buffer, shared geometry disposal, velocity uniforms) | bug reproduced | fixed, identical pixels and velocities otherwise | not applicable | not applicable |
 | New tests in `test/unit/src/renderers/common/StorageBufferAttribute.tests.js` (13) | 12 fail | 13 pass | 12 fail | 13 pass |
 | Render test: instanced quads from a GPU-only vec3 storage buffer, plus a quad drawn through a GPU-only index buffer | reference | pixel-identical, no CPU arrays | reference | pixel-identical, no CPU arrays |
 
@@ -74,4 +82,4 @@ Each patch is a single commit on `main`, based on upstream `dev`:
 3. Push the branch.
 4. Open a pull request against `mrdoob/three.js` `dev`.
 
-The tests for all three patches live in one file. Keep the relevant tests with each pull request.
+The tests for the three storage patches share one file (`StorageBufferAttribute.tests.js`). Keep the relevant tests with each pull request.
