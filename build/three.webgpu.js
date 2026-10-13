@@ -31810,6 +31810,24 @@ class Attributes extends DataMap {
 		 */
 		this.info = info;
 
+		/**
+		 * Stores weak references to the storage attributes with attached
+		 * `dispose` event listeners.
+		 *
+		 * @private
+		 * @type {Set<WeakRef<StorageBufferAttribute|StorageInstancedBufferAttribute>>}
+		 */
+		this._tracked = new Set();
+
+		/**
+		 * Removes weak references from `_tracked` when their attribute
+		 * has been garbage collected without an explicit `dispose()`.
+		 *
+		 * @private
+		 * @type {FinalizationRegistry}
+		 */
+		this._registry = new FinalizationRegistry( ( ref ) => this._tracked.delete( ref ) );
+
 	}
 
 	/**
@@ -31823,6 +31841,15 @@ class Attributes extends DataMap {
 		const attributeData = super.delete( attribute );
 
 		if ( attributeData !== null ) {
+
+			if ( attribute.isStorageBufferAttribute === true || attribute.isStorageInstancedBufferAttribute === true ) {
+
+				attribute.removeEventListener( 'dispose', attributeData.onDispose );
+
+				this._tracked.delete( attributeData.ref );
+				this._registry.unregister( attributeData.ref );
+
+			}
 
 			this.backend.destroyAttribute( attribute );
 
@@ -31871,6 +31898,26 @@ class Attributes extends DataMap {
 
 			data.version = this._getBufferAttribute( attribute ).version;
 
+			// only storage buffer attributes support disposal
+
+			if ( attribute.isStorageBufferAttribute === true || attribute.isStorageInstancedBufferAttribute === true ) {
+
+				data.onDispose = () => {
+
+					this.delete( attribute );
+
+				};
+
+				attribute.addEventListener( 'dispose', data.onDispose );
+
+				// see #31798 why tracking separate remove listeners is required right now
+				data.ref = new WeakRef( attribute );
+
+				this._tracked.add( data.ref );
+				this._registry.register( attribute, data.ref, data.ref );
+
+			}
+
 		} else {
 
 			const bufferAttribute = this._getBufferAttribute( attribute );
@@ -31899,6 +31946,24 @@ class Attributes extends DataMap {
 		if ( attribute.isInterleavedBufferAttribute ) attribute = attribute.data;
 
 		return attribute;
+
+	}
+
+	dispose() {
+
+		for ( const ref of this._tracked ) {
+
+			const attribute = ref.deref();
+
+			if ( attribute === undefined || this.has( attribute ) === false ) continue;
+
+			this.delete( attribute );
+
+		}
+
+		this._tracked.clear();
+
+		super.dispose();
 
 	}
 
@@ -32831,7 +32896,11 @@ class Info {
 
 		if ( attribute.isInterleavedBufferAttribute ) attribute = attribute.data;
 
-		if ( attribute.array ) {
+		if ( attribute.hasCPUData === false ) {
+
+			return attribute.count * attribute.itemSize * attribute.arrayType.BYTES_PER_ELEMENT;
+
+		} else if ( attribute.array ) {
 
 			return attribute.array.byteLength;
 
@@ -40662,6 +40731,10 @@ class StorageInstancedBufferAttribute extends InstancedBufferAttribute {
 	/**
 	 * Constructs a new storage instanced buffer attribute.
 	 *
+	 * When created from an item count, the attribute holds no CPU-side data: its GPU buffer
+	 * is zero-initialized without an upload and `array` is only allocated when it is accessed,
+	 * e.g. to define initial data.
+	 *
 	 * @param {number|TypedArray} count - The item count. It is also valid to pass a typed array as an argument.
 	 * The subsequent parameters are then obsolete.
 	 * @param {number} itemSize - The item size.
@@ -40669,9 +40742,9 @@ class StorageInstancedBufferAttribute extends InstancedBufferAttribute {
 	 */
 	constructor( count, itemSize, typeClass = Float32Array ) {
 
-		const array = ArrayBuffer.isView( count ) ? count : new typeClass( count * itemSize );
+		const isArray = ArrayBuffer.isView( count );
 
-		super( array, itemSize );
+		super( isArray ? count : undefined, itemSize );
 
 		/**
 		 * This flag can be used for type testing.
@@ -40681,6 +40754,61 @@ class StorageInstancedBufferAttribute extends InstancedBufferAttribute {
 		 * @default true
 		 */
 		this.isStorageInstancedBufferAttribute = true;
+
+		/**
+		 * The typed array constructor used to allocate `array` on first access.
+		 *
+		 * @private
+		 * @type {TypedArray.constructor}
+		 */
+		this._arrayType = isArray ? count.constructor : typeClass;
+
+		if ( isArray === false ) this.count = count;
+
+	}
+
+	/**
+	 * The attribute data. If the attribute was created from an item count,
+	 * a zero-filled array is allocated on first access.
+	 *
+	 * @type {TypedArray}
+	 */
+	get array() {
+
+		if ( this._array === null ) this._array = new this._arrayType( this.count * this.itemSize );
+
+		return this._array;
+
+	}
+
+	set array( value ) {
+
+		this._array = value === undefined ? null : value;
+
+	}
+
+	/**
+	 * The typed array constructor of the attribute data.
+	 *
+	 * @type {TypedArray.constructor}
+	 * @readonly
+	 */
+	get arrayType() {
+
+		return this._array !== null ? this._array.constructor : this._arrayType;
+
+	}
+
+	/**
+	 * Whether the attribute holds CPU-side data. If `false`, its GPU buffer is
+	 * created zero-initialized without uploading data.
+	 *
+	 * @type {boolean}
+	 * @readonly
+	 */
+	get hasCPUData() {
+
+		return this._array !== null;
 
 	}
 
@@ -40705,6 +40833,10 @@ class StorageBufferAttribute extends BufferAttribute {
 	/**
 	 * Constructs a new storage buffer attribute.
 	 *
+	 * When created from an item count, the attribute holds no CPU-side data: its GPU buffer
+	 * is zero-initialized without an upload and `array` is only allocated when it is accessed,
+	 * e.g. to define initial data.
+	 *
 	 * @param {number|TypedArray} count - The item count. It is also valid to pass a typed array as an argument.
 	 * The subsequent parameters are then obsolete.
 	 * @param {number} itemSize - The item size.
@@ -40712,9 +40844,9 @@ class StorageBufferAttribute extends BufferAttribute {
 	 */
 	constructor( count, itemSize, typeClass = Float32Array ) {
 
-		const array = ArrayBuffer.isView( count ) ? count : new typeClass( count * itemSize );
+		const isArray = ArrayBuffer.isView( count );
 
-		super( array, itemSize );
+		super( isArray ? count : undefined, itemSize );
 
 		/**
 		 * This flag can be used for type testing.
@@ -40724,6 +40856,61 @@ class StorageBufferAttribute extends BufferAttribute {
 		 * @default true
 		 */
 		this.isStorageBufferAttribute = true;
+
+		/**
+		 * The typed array constructor used to allocate `array` on first access.
+		 *
+		 * @private
+		 * @type {TypedArray.constructor}
+		 */
+		this._arrayType = isArray ? count.constructor : typeClass;
+
+		if ( isArray === false ) this.count = count;
+
+	}
+
+	/**
+	 * The attribute data. If the attribute was created from an item count,
+	 * a zero-filled array is allocated on first access.
+	 *
+	 * @type {TypedArray}
+	 */
+	get array() {
+
+		if ( this._array === null ) this._array = new this._arrayType( this.count * this.itemSize );
+
+		return this._array;
+
+	}
+
+	set array( value ) {
+
+		this._array = value === undefined ? null : value;
+
+	}
+
+	/**
+	 * The typed array constructor of the attribute data.
+	 *
+	 * @type {TypedArray.constructor}
+	 * @readonly
+	 */
+	get arrayType() {
+
+		return this._array !== null ? this._array.constructor : this._arrayType;
+
+	}
+
+	/**
+	 * Whether the attribute holds CPU-side data. If `false`, its GPU buffer is
+	 * created zero-initialized without uploading data.
+	 *
+	 * @type {boolean}
+	 * @readonly
+	 */
+	get hasCPUData() {
+
+		return this._array !== null;
 
 	}
 
@@ -54427,7 +54614,6 @@ class NodeBuilder {
 
 		if ( attribute.isInterleavedBufferAttribute ) dataAttribute = attribute.data;
 
-		const array = dataAttribute.array;
 		const itemSize = attribute.itemSize;
 		const normalized = attribute.normalized;
 
@@ -54435,7 +54621,9 @@ class NodeBuilder {
 
 		if ( ! ( attribute instanceof Float16BufferAttribute ) && normalized !== true ) {
 
-			arrayType = this.getTypeFromArray( array );
+			// storage attributes without CPU-side data provide their array type without allocating the array
+
+			arrayType = dataAttribute.hasCPUData === false ? typeFromArray.get( dataAttribute.arrayType ) : this.getTypeFromArray( dataAttribute.array );
 
 		}
 
@@ -64364,6 +64552,7 @@ class Renderer {
 			this._animation.dispose();
 			this._objects.dispose();
 			this._geometries.dispose();
+			this._attributes.dispose();
 			this._pipelines.dispose();
 			this._nodes.dispose();
 			this._bindings.dispose();
@@ -65827,7 +66016,7 @@ class Buffer extends Binding {
 	 */
 	get byteLength() {
 
-		return getFloatLength( this._buffer.byteLength );
+		return getFloatLength( this.buffer.byteLength );
 
 	}
 
@@ -69878,7 +70067,20 @@ class WebGLAttributeUtils {
 
 		const attributeData = backend.get( attribute );
 
-		gl.deleteBuffer( attributeData.bufferGPU );
+		if ( attributeData.buffers !== undefined ) {
+
+			// storage attributes hold a second buffer for transform feedback
+			for ( const buffer of attributeData.buffers ) {
+
+				gl.deleteBuffer( buffer );
+
+			}
+
+		} else {
+
+			gl.deleteBuffer( attributeData.bufferGPU );
+
+		}
 
 		backend.delete( attribute );
 
@@ -77376,7 +77578,7 @@ class NodeStorageBuffer extends StorageBuffer {
 
 		const label = nodeUniform && nodeUniform.name ? nodeUniform.name : _id ++;
 
-		super( 'StorageBuffer_' + label, nodeUniform ? nodeUniform.value : null );
+		super( 'StorageBuffer_' + label );
 
 		/**
 		 * The node uniform.
@@ -83465,8 +83667,8 @@ ${ flowData.code }
 		const isAttributeStructType = ( attribute.isBufferAttribute || attribute.isInstancedBufferAttribute ) && bufferNode.structTypeNode !== null;
 
 		const isStructArray =
-			( bufferNode.value && bufferNode.value.array ) &&
-			( typeof bufferNode.value.itemSize === 'number' && bufferNode.value.array.length > bufferNode.value.itemSize );
+			Boolean( bufferNode.value ) &&
+			( typeof bufferNode.value.itemSize === 'number' && bufferNode.value.count > 1 );
 
 		return isAttributeStructType && ! isStructArray;
 
@@ -84142,6 +84344,21 @@ const typeArraysToVertexFormatPrefixForItemSize1 = new Map( [
 ] );
 
 /**
+ * Returns the typed array constructor of the given attribute's data without
+ * allocating the array of storage attributes that hold no CPU-side data.
+ *
+ * @private
+ * @function
+ * @param {BufferAttribute|InterleavedBufferAttribute} attribute - The attribute.
+ * @return {TypedArray.constructor} The typed array constructor.
+ */
+function getArrayType( attribute ) {
+
+	return attribute.hasCPUData === false ? attribute.arrayType : attribute.array.constructor;
+
+}
+
+/**
  * A WebGPU backend utility module for managing shader attributes.
  *
  * @private
@@ -84179,7 +84396,59 @@ class WebGPUAttributeUtils {
 
 		let buffer = bufferData.buffer;
 
-		if ( buffer === undefined ) {
+		if ( buffer === undefined && bufferAttribute.hasCPUData === false ) {
+
+			// storage attributes without CPU data: WebGPU zero-initializes buffers, so no data are allocated
+			// or uploaded. apply the same widening and padding as the upload path so a CPU array allocated
+			// later matches the GPU layout
+
+			let ArrayType = bufferAttribute.arrayType;
+
+			if ( bufferAttribute.normalized === false ) {
+
+				if ( ArrayType === Int16Array || ArrayType === Int8Array ) {
+
+					ArrayType = Int32Array;
+
+				} else if ( ArrayType === Uint16Array || ArrayType === Uint8Array ) {
+
+					ArrayType = Uint32Array;
+
+				}
+
+			}
+
+			bufferAttribute._arrayType = ArrayType;
+
+			const bytesPerElement = ArrayType.BYTES_PER_ELEMENT;
+
+			if ( bufferAttribute.itemSize === 3 ) {
+
+				// WGSL does not support packed vec3 data in storage buffers, pad to vec4
+
+				bufferAttribute.itemSize = 4;
+
+			} else if ( bufferAttribute.itemSize > 1 && ( bufferAttribute.itemSize * bytesPerElement ) % 4 !== 0 ) {
+
+				// arrayStride must be a multiple of 4
+
+				bufferAttribute.itemSize = ( Math.floor( ( bufferAttribute.itemSize * bytesPerElement + 3 ) / 4 ) * 4 ) / bytesPerElement;
+
+			}
+
+			// total buffer size must be a multiple of 4
+			const byteLength = bufferAttribute.count * bufferAttribute.itemSize * bytesPerElement;
+			const size = byteLength + ( ( 4 - ( byteLength % 4 ) ) % 4 );
+
+			_bufferDescriptor$3.label = bufferAttribute.name;
+			_bufferDescriptor$3.size = size;
+			_bufferDescriptor$3.usage = usage;
+
+			bufferData.buffer = backend.device.createBuffer( _bufferDescriptor$3 );
+
+			_bufferDescriptor$3.reset();
+
+		} else if ( buffer === undefined ) {
 
 			const device = backend.device;
 
@@ -84244,19 +84513,22 @@ class WebGPUAttributeUtils {
 
 				if ( bufferAttribute.isStorageBufferAttribute || bufferAttribute.isStorageInstancedBufferAttribute ) {
 
-					// update the storage attribute so storage bindings access the padded layout
+					// update the storage attribute so storage bindings access the padded layout.
+					// the attribute now holds padded data so buffer updates upload it as is
 
 					bufferAttribute.itemSize = paddedItemSize;
 					bufferAttribute.array = paddedArray;
 
+				} else {
+
+					// save the original and padded item size so buffer updates can apply the same padding
+
+					bufferData._itemSize = itemSize;
+					bufferData._paddedItemSize = paddedItemSize;
+
 				}
 
 				array = paddedArray;
-
-				// save the original and padded item size so buffer updates can apply the same padding
-
-				bufferData._itemSize = itemSize;
-				bufferData._paddedItemSize = paddedItemSize;
 
 			}
 
@@ -84312,14 +84584,6 @@ class WebGPUAttributeUtils {
 			for ( let i = 0; i < bufferAttribute.count; i ++ ) {
 
 				array.set( bufferAttribute.array.subarray( i * itemSize, i * itemSize + itemSize ), i * paddedItemSize );
-
-			}
-
-			if ( bufferAttribute.isStorageBufferAttribute || bufferAttribute.isStorageInstancedBufferAttribute ) {
-
-				// keep the storage attribute in sync with the padded layout
-
-				bufferAttribute.array = array;
 
 			}
 
@@ -84396,7 +84660,7 @@ class WebGPUAttributeUtils {
 		for ( let slot = 0; slot < attributes.length; slot ++ ) {
 
 			const geometryAttribute = attributes[ slot ];
-			const bytesPerElement = geometryAttribute.array.BYTES_PER_ELEMENT;
+			const bytesPerElement = getArrayType( geometryAttribute ).BYTES_PER_ELEMENT;
 			const bufferAttribute = this._getBufferAttribute( geometryAttribute );
 
 			let vertexBufferLayout = vertexBuffers.get( bufferAttribute );
@@ -84578,7 +84842,27 @@ class WebGPUAttributeUtils {
 		submit( device, gpuCommands );
 
 		// map the data to the CPU
-		await readBufferGPU.mapAsync( GPUMapMode.READ, 0, byteLength );
+		try {
+
+			await readBufferGPU.mapAsync( GPUMapMode.READ, 0, byteLength );
+
+		} catch ( e ) {
+
+			// a failed readback must not leak its temporary buffer or leave a readback buffer locked
+
+			if ( target !== null && target.isReadbackBuffer ) {
+
+				target._mapped = false;
+
+			} else {
+
+				readBufferGPU.destroy();
+
+			}
+
+			throw e;
+
+		}
 
 		if ( target === null ) {
 
@@ -84616,7 +84900,7 @@ class WebGPUAttributeUtils {
 	_getVertexFormat( geometryAttribute ) {
 
 		const { itemSize, normalized } = geometryAttribute;
-		const ArrayType = geometryAttribute.array.constructor;
+		const ArrayType = getArrayType( geometryAttribute );
 		const AttributeType = geometryAttribute.constructor;
 
 		let format;
@@ -86333,7 +86617,10 @@ class WebGPUPipelineUtils {
 
 		if ( geometry.index !== null && object.isLine === true && object.isLineSegments !== true ) {
 
-			descriptor.stripIndexFormat = ( geometry.index.array instanceof Uint16Array ) ? GPUIndexFormat.Uint16 : GPUIndexFormat.Uint32;
+			const index = geometry.index;
+			const isUint16 = index.hasCPUData === false ? index.arrayType === Uint16Array : index.array instanceof Uint16Array;
+
+			descriptor.stripIndexFormat = isUint16 ? GPUIndexFormat.Uint16 : GPUIndexFormat.Uint32;
 
 		}
 
@@ -89021,7 +89308,8 @@ class WebGPUBackend extends Backend {
 			if ( currentSets.index !== index ) {
 
 				const buffer = this.get( index ).buffer;
-				const indexFormat = ( index.array instanceof Uint16Array ) ? GPUIndexFormat.Uint16 : GPUIndexFormat.Uint32;
+				const isUint16 = index.hasCPUData === false ? index.arrayType === Uint16Array : index.array instanceof Uint16Array;
+				const indexFormat = isUint16 ? GPUIndexFormat.Uint16 : GPUIndexFormat.Uint32;
 
 				passEncoderGPU.setIndexBuffer( buffer, indexFormat );
 

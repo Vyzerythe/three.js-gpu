@@ -17593,7 +17593,7 @@ class BufferAttribute extends EventDispatcher {
 	}
 
 	/**
-	 * Disposes of the buffer attribute. Available only in {@link WebGPURenderer}.
+	 * Can be used to dispose storage buffer attributes. Available only in {@link WebGPURenderer}.
 	 */
 	dispose() {
 
