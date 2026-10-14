@@ -3,12 +3,31 @@ import StorageInstancedBufferAttribute from '../../../../../src/renderers/common
 import IndirectStorageBufferAttribute from '../../../../../src/renderers/common/IndirectStorageBufferAttribute.js';
 
 import { ReadbackBuffer } from 'three/webgpu';
-import { Fn, instanceIndex, instancedArray, float, vec3, vec4, struct } from 'three/tsl';
+import { Fn, instanceIndex, instancedArray, float, uint, vec3, vec4, struct, storage } from 'three/tsl';
 import { rawComputeTest } from '../../nodes/tsl/gpu-raw-test-utils.js';
 
 async function readFloats( renderer, attribute ) {
 
 	return new Float32Array( await renderer.getArrayBufferAsync( attribute ) );
+
+}
+
+// these tests need the WebGPU backend: WebGPURenderer falls back to WebGL 2 where WebGPU is unavailable
+
+function webgpuTest( name, run ) {
+
+	rawComputeTest( name, {}, async ( { assert, renderer } ) => {
+
+		if ( renderer.backend.isWebGPUBackend !== true ) {
+
+			assert.ok( true, `SKIPPED: "${ name }" requires the WebGPU backend.` );
+			return;
+
+		}
+
+		await run( { assert, renderer } );
+
+	} );
 
 }
 
@@ -77,9 +96,44 @@ export default QUnit.module( 'Renderers', () => {
 
 			} );
 
+			QUnit.test( 'the array type follows the assigned array', ( assert ) => {
+
+				for ( const AttributeClass of [ StorageBufferAttribute, StorageInstancedBufferAttribute ] ) {
+
+					const attribute = new AttributeClass( 4, 1 );
+
+					attribute.array = new Uint32Array( 4 );
+
+					assert.strictEqual( attribute.arrayType, Uint32Array, `${ AttributeClass.name }: arrayType after replacing the array` );
+
+					attribute.array = null;
+
+					assert.strictEqual( attribute.arrayType, Uint32Array, `${ AttributeClass.name }: arrayType after releasing the array` );
+					assert.ok( attribute.array instanceof Uint32Array, `${ AttributeClass.name }: the array is allocated again with the last type` );
+
+				}
+
+			} );
+
+			QUnit.test( 'copy() keeps the array type of the source', ( assert ) => {
+
+				for ( const AttributeClass of [ StorageBufferAttribute, StorageInstancedBufferAttribute ] ) {
+
+					const source = new AttributeClass( new Uint32Array( [ 1, 2, 3, 4 ] ), 1 );
+					const attribute = new AttributeClass( 4, 1 ).copy( source );
+
+					attribute.array = null;
+
+					assert.strictEqual( attribute.arrayType, Uint32Array, `${ AttributeClass.name }: arrayType` );
+					assert.deepEqual( attribute.array, new Uint32Array( 4 ), `${ AttributeClass.name }: a released array is allocated again zero-filled` );
+
+				}
+
+			} );
+
 			// GPU
 
-			rawComputeTest( 'compute writes into a storage buffer without CPU data are read back', {}, async ( { assert, renderer } ) => {
+			webgpuTest( 'compute writes into a storage buffer without CPU data are read back', async ( { assert, renderer } ) => {
 
 				const count = 64;
 				const buffer = instancedArray( count, 'vec4' );
@@ -107,7 +161,7 @@ export default QUnit.module( 'Renderers', () => {
 
 			} );
 
-			rawComputeTest( 'a storage buffer without CPU data starts zero-initialized', {}, async ( { assert, renderer } ) => {
+			webgpuTest( 'a storage buffer without CPU data starts zero-initialized', async ( { assert, renderer } ) => {
 
 				const count = 32;
 				const buffer = instancedArray( count, 'vec4' );
@@ -120,12 +174,13 @@ export default QUnit.module( 'Renderers', () => {
 
 				const result = await readFloats( renderer, buffer.value );
 
+				assert.strictEqual( result.length, count * 4, 'buffer length' );
 				assert.ok( result.every( ( value ) => value === 1 ), 'every component is 0 + 1' );
 				assert.strictEqual( buffer.value.hasCPUData, false, 'no CPU array was allocated' );
 
 			} );
 
-			rawComputeTest( 'data written into the array before first use are uploaded', {}, async ( { assert, renderer } ) => {
+			webgpuTest( 'data written into the array before first use are uploaded', async ( { assert, renderer } ) => {
 
 				const count = 16;
 				const buffer = instancedArray( count, 'float' );
@@ -144,7 +199,7 @@ export default QUnit.module( 'Renderers', () => {
 
 			} );
 
-			rawComputeTest( 'a vec3 storage buffer without CPU data is padded to vec4', {}, async ( { assert, renderer } ) => {
+			webgpuTest( 'a vec3 storage buffer without CPU data is padded to vec4', async ( { assert, renderer } ) => {
 
 				const count = 4;
 				const buffer = instancedArray( count, 'vec3' );
@@ -165,38 +220,7 @@ export default QUnit.module( 'Renderers', () => {
 
 			} );
 
-			rawComputeTest( 'updates of padded vec3 storage data are uploaded unchanged', {}, async ( { assert, renderer } ) => {
-
-				const buffer = instancedArray( new Float32Array( [ 1, 2, 3, 4, 5, 6, 7, 8, 9 ] ), 'vec3' );
-				const output = instancedArray( 3, 'vec4' );
-
-				const copy = Fn( () => {
-
-					output.element( instanceIndex ).assign( vec4( buffer.element( instanceIndex ), 1 ) );
-
-				} )().compute( 3 );
-
-				await renderer.computeAsync( copy );
-
-				// the attribute now holds the padded layout
-
-				const array = buffer.value.array;
-
-				assert.strictEqual( buffer.value.itemSize, 4, 'itemSize is padded' );
-				assert.deepEqual( Array.from( array ), [ 1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0 ], 'padded array' );
-
-				array.set( [ 40, 50, 60 ], 4 );
-				buffer.value.needsUpdate = true;
-
-				await renderer.computeAsync( copy );
-
-				const result = await readFloats( renderer, output.value );
-
-				assert.deepEqual( Array.from( result ), [ 1, 2, 3, 1, 40, 50, 60, 1, 7, 8, 9, 1 ], 'updated values' );
-
-			} );
-
-			rawComputeTest( 'a struct array without CPU data', {}, async ( { assert, renderer } ) => {
+			webgpuTest( 'a struct array without CPU data', async ( { assert, renderer } ) => {
 
 				const Item = struct( { a: 'vec4', b: 'vec4' } );
 				const count = 8;
@@ -219,7 +243,7 @@ export default QUnit.module( 'Renderers', () => {
 
 			} );
 
-			rawComputeTest( 'renderer.info reports the size of storage buffers without CPU data', {}, async ( { assert, renderer } ) => {
+			webgpuTest( 'renderer.info reports the size of storage buffers without CPU data', async ( { assert, renderer } ) => {
 
 				const before = renderer.info.memory.storageAttributesSize;
 				const buffer = instancedArray( 100, 'vec4' );
@@ -239,7 +263,7 @@ export default QUnit.module( 'Renderers', () => {
 
 			} );
 
-			rawComputeTest( 'dispose() destroys the GPU buffer of a storage buffer without CPU data', {}, async ( { assert, renderer } ) => {
+			webgpuTest( 'dispose() destroys the GPU buffer of a storage buffer without CPU data', async ( { assert, renderer } ) => {
 
 				const buffer = instancedArray( 8, 'float' );
 
@@ -275,7 +299,72 @@ export default QUnit.module( 'Renderers', () => {
 
 			} );
 
-			rawComputeTest( 'a failed readback releases its buffers', {}, async ( { assert, renderer } ) => {
+			webgpuTest( 'the widened type of an uploaded array is kept when the array is released', async ( { assert, renderer } ) => {
+
+				const attribute = new StorageBufferAttribute( new Uint16Array( [ 1, 2, 3, 4 ] ), 1 );
+				const buffer = storage( attribute, 'uint', 4 );
+
+				await renderer.computeAsync( Fn( () => {
+
+					buffer.element( instanceIndex ).mulAssign( uint( 2 ) );
+
+				} )().compute( 4 ) );
+
+				const result = new Uint32Array( await renderer.getArrayBufferAsync( attribute ) );
+
+				assert.deepEqual( Array.from( result ), [ 2, 4, 6, 8 ], 'values' );
+				assert.strictEqual( attribute.arrayType, Uint32Array, 'the uploaded array was widened to 32 bit' );
+
+				attribute.array = null;
+
+				assert.strictEqual( attribute.arrayType, Uint32Array, 'arrayType after releasing the array' );
+
+			} );
+
+			webgpuTest( 'updates of padded vec3 storage data are uploaded unchanged', async ( { assert, renderer } ) => {
+
+				const buffer = instancedArray( new Float32Array( [ 1, 2, 3, 4, 5, 6, 7, 8, 9 ] ), 'vec3' );
+				const output = instancedArray( 3, 'vec4' );
+
+				const copy = Fn( () => {
+
+					output.element( instanceIndex ).assign( vec4( buffer.element( instanceIndex ), 1 ) );
+
+				} )().compute( 3 );
+
+				await renderer.computeAsync( copy );
+
+				// the attribute now holds the padded layout
+
+				const array = buffer.value.array;
+
+				assert.strictEqual( buffer.value.itemSize, 4, 'itemSize is padded' );
+				assert.deepEqual( Array.from( array ), [ 1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0 ], 'padded array' );
+
+				array.set( [ 40, 50, 60 ], 4 );
+				buffer.value.needsUpdate = true;
+
+				await renderer.computeAsync( copy );
+
+				const result = await readFloats( renderer, output.value );
+
+				assert.deepEqual( Array.from( result ), [ 1, 2, 3, 1, 40, 50, 60, 1, 7, 8, 9, 1 ], 'updated values' );
+
+				// update ranges address the padded layout as well
+
+				array.set( [ 70, 80, 90 ], 8 );
+				buffer.value.addUpdateRange( 8, 3 );
+				buffer.value.needsUpdate = true;
+
+				await renderer.computeAsync( copy );
+
+				const rangeResult = await readFloats( renderer, output.value );
+
+				assert.deepEqual( Array.from( rangeResult ), [ 1, 2, 3, 1, 40, 50, 60, 1, 70, 80, 90, 1 ], 'values updated through an update range' );
+
+			} );
+
+			webgpuTest( 'a failed readback releases its buffers', async ( { assert, renderer } ) => {
 
 				const buffer = instancedArray( 4, 'float' );
 
@@ -288,10 +377,12 @@ export default QUnit.module( 'Renderers', () => {
 				const mapAsync = GPUBuffer.prototype.mapAsync;
 				const destroy = GPUBuffer.prototype.destroy;
 				const destroyed = new Set();
+				const failure = new Error( 'mapping failed' );
+				const errors = [];
 
 				GPUBuffer.prototype.mapAsync = function () {
 
-					return Promise.reject( new Error( 'mapping failed' ) );
+					return Promise.reject( failure );
 
 				};
 
@@ -303,29 +394,37 @@ export default QUnit.module( 'Renderers', () => {
 				};
 
 				const target = new ReadbackBuffer( 16 );
-				let failures = 0;
 
 				try {
 
-					await renderer.getArrayBufferAsync( buffer.value ).catch( () => failures ++ );
-					await renderer.getArrayBufferAsync( buffer.value, target ).catch( () => failures ++ );
+					try {
+
+						await renderer.getArrayBufferAsync( buffer.value ).catch( ( error ) => errors.push( error ) );
+						await renderer.getArrayBufferAsync( buffer.value, target ).catch( ( error ) => errors.push( error ) );
+
+					} finally {
+
+						GPUBuffer.prototype.mapAsync = mapAsync;
+						GPUBuffer.prototype.destroy = destroy;
+
+					}
+
+					assert.strictEqual( errors.length, 2, 'both readbacks failed' );
+					assert.strictEqual( errors[ 0 ], failure, 'a readback into a new array buffer rethrows the mapping error' );
+					assert.strictEqual( errors[ 1 ], failure, 'a readback into a ReadbackBuffer rethrows the mapping error' );
+					assert.strictEqual( destroyed.size, 1, 'the temporary read buffer was destroyed' );
+
+					await renderer.getArrayBufferAsync( buffer.value, target );
+
+					assert.deepEqual( Array.from( new Float32Array( target.buffer ) ), [ 7, 7, 7, 7 ], 'the readback buffer can be used again' );
+
+					target.release();
 
 				} finally {
 
-					GPUBuffer.prototype.mapAsync = mapAsync;
-					GPUBuffer.prototype.destroy = destroy;
+					target.dispose();
 
 				}
-
-				assert.strictEqual( failures, 2, 'both readbacks failed' );
-				assert.strictEqual( destroyed.size, 1, 'the temporary read buffer was destroyed' );
-
-				await renderer.getArrayBufferAsync( buffer.value, target );
-
-				assert.deepEqual( Array.from( new Float32Array( target.buffer ) ), [ 7, 7, 7, 7 ], 'the readback buffer can be used again' );
-
-				target.release();
-				target.dispose();
 
 			} );
 
